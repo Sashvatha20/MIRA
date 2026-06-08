@@ -1,4 +1,5 @@
 import os
+import time
 from dotenv import load_dotenv
 from google import genai
 
@@ -11,28 +12,57 @@ def get_health_remarks(name: str, age: int, glucose: float, haemoglobin: float, 
     if not GEMINI_API_KEY:
         return "Configuration error: GEMINI_API_KEY is not set in your .env file."
 
+    prompt = build_health_prompt(name, age, glucose, haemoglobin, cholesterol)
+
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = build_health_prompt(name, age, glucose, haemoglobin, cholesterol)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        if response and response.text:
-            return response.text.strip()
-        else:
-            return "AI prediction was empty. Please try saving the record again."
+    except Exception:
+        return "AI service configuration failed. Please check your API setup."
 
-    except Exception as e:
-        error_msg = str(e).lower()
-        if "quota" in error_msg or "429" in error_msg or "exhausted" in error_msg:
-            return "API daily quota reached. Please use a fresh API key from a different Google account."
-        elif "api key" in error_msg or "invalid" in error_msg or "401" in error_msg:
-            return "Invalid API key. Please check your GEMINI_API_KEY in the .env file."
-        elif "network" in error_msg or "connect" in error_msg:
-            return "Network error. Please check your internet connection and try again."
-        else:
-            return f"Health prediction unavailable: {str(e)}"
+    max_retries = 3
+    delay = 2
+
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+
+            if response and getattr(response, "text", None):
+                return response.text.strip()
+
+            return "AI prediction is temporarily unavailable. Record saved successfully."
+
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            if "quota" in error_msg or "429" in error_msg or "exhausted" in error_msg:
+                return "API quota reached. Please try again later or use another API key."
+
+            if "api key" in error_msg or "invalid" in error_msg or "401" in error_msg:
+                return "Invalid API key. Please check your GEMINI_API_KEY in the .env file."
+
+            if "network" in error_msg or "connect" in error_msg or "connection" in error_msg:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return "Network error. Please check your internet connection and try again."
+
+            if "503" in error_msg or "unavailable" in error_msg or "overloaded" in error_msg or "high demand" in error_msg:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return "AI prediction is temporarily unavailable due to high demand. Record saved successfully."
+
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+
+            return "Health prediction is temporarily unavailable. Record saved successfully."
 
 
 def build_health_prompt(name: str, age: int, glucose: float, haemoglobin: float, cholesterol: float) -> str:
